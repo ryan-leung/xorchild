@@ -2,12 +2,13 @@ package xor
 
 import (
 	"bytes"
-	"fmt"
+	"crypto/sha256"
+	"errors"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestEncryptDecryptBytesRoundTrip(t *testing.T) {
@@ -53,104 +54,109 @@ func TestEncryptDecryptStreamRoundTrip(t *testing.T) {
 	}
 }
 
-// TestEncryptDecryptStreamWithVideo downloads a test video from test-videos.co.uk
-// and tests the stream-based encryption/decryption.
-func TestEncryptDecryptStreamWithVideo(t *testing.T) {
-	// Use the 1MB Big Buck Bunny video (640x360, 10s, H.264 MP4)
-	videoURL := "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4"
-	
+func TestEncryptDecryptFileRoundTripWithLocalFixture(t *testing.T) {
 	dir := t.TempDir()
-	videoPath := filepath.Join(dir, "original.mp4")
-	encryptedPath := filepath.Join(dir, "encrypted.mp4")
-	decryptedPath := filepath.Join(dir, "decrypted.mp4")
+	inputPath := filepath.Join(dir, "input.bin")
+	encryptedPath := filepath.Join(dir, "encrypted.bin")
+	decryptedPath := filepath.Join(dir, "decrypted.bin")
 
-	// Download the test video
-	t.Logf("Downloading test video from %s", videoURL)
-	if err := downloadFile(videoURL, videoPath); err != nil {
-		t.Fatalf("failed to download video: %v", err)
+	fixturePath := filepath.Join("..", "tests", "test.bin")
+	keyPath := filepath.Join("..", "tests", "key.txt")
+
+	if err := copyFirstNBytes(fixturePath, inputPath, 2*1024*1024); err != nil {
+		t.Fatalf("prepare local fixture sample: %v", err)
 	}
 
-	// Read the original video
-	originalData, err := os.ReadFile(videoPath)
+	if err := EncryptDecryptFile(keyPath, inputPath, encryptedPath); err != nil {
+		t.Fatalf("encrypt file: %v", err)
+	}
+
+	if err := EncryptDecryptFile(keyPath, encryptedPath, decryptedPath); err != nil {
+		t.Fatalf("decrypt file: %v", err)
+	}
+
+	originalHash, err := fileSHA256(inputPath)
 	if err != nil {
-		t.Fatalf("failed to read video: %v", err)
+		t.Fatalf("hash original file: %v", err)
 	}
 
-	key := []byte("stream-test-key")
-
-	// Encrypt the video using stream
-	t.Log("Encrypting video stream...")
-	inputFile, err := os.Open(videoPath)
+	decryptedHash, err := fileSHA256(decryptedPath)
 	if err != nil {
-		t.Fatalf("failed to open video: %v", err)
-	}
-	defer inputFile.Close()
-
-	encryptedFile, err := os.Create(encryptedPath)
-	if err != nil {
-		t.Fatalf("failed to create encrypted file: %v", err)
-	}
-	defer encryptedFile.Close()
-
-	if err := EncryptDecryptStream(inputFile, encryptedFile, key); err != nil {
-		t.Fatalf("encrypt stream: %v", err)
-	}
-	encryptedFile.Close()
-
-	// Decrypt the video using stream
-	t.Log("Decrypting video stream...")
-	encryptedFile, err = os.Open(encryptedPath)
-	if err != nil {
-		t.Fatalf("failed to open encrypted file: %v", err)
-	}
-	defer encryptedFile.Close()
-
-	decryptedFile, err := os.Create(decryptedPath)
-	if err != nil {
-		t.Fatalf("failed to create decrypted file: %v", err)
-	}
-	defer decryptedFile.Close()
-
-	if err := EncryptDecryptStream(encryptedFile, decryptedFile, key); err != nil {
-		t.Fatalf("decrypt stream: %v", err)
-	}
-	decryptedFile.Close()
-
-	// Verify the decrypted file matches the original
-	t.Log("Verifying decrypted file...")
-	decryptedData, err := os.ReadFile(decryptedPath)
-	if err != nil {
-		t.Fatalf("failed to read decrypted file: %v", err)
+		t.Fatalf("hash decrypted file: %v", err)
 	}
 
-	if !bytes.Equal(decryptedData, originalData) {
-		t.Fatal("video stream round trip mismatch")
+	if originalHash != decryptedHash {
+		t.Fatalf("file round trip mismatch: got %x want %x", decryptedHash, originalHash)
 	}
-
-	t.Log("Video stream round-trip test passed!")
 }
 
-// downloadFile downloads a file from a URL to the specified path
-func downloadFile(url, path string) error {
-	resp, err := http.Get(url)
+func TestEncryptDecryptWithProgressAbortsOnWriteError(t *testing.T) {
+	done := make(chan error, 1)
+	key := []byte("secret")
+	input := bytes.NewReader(bytes.Repeat([]byte("abcdef"), 400000))
+
+	go func() {
+		done <- encryptDecryptWithProgress(input, &errWriter{failAfter: 1}, key, int64(input.Len()))
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, errInjectedWrite) {
+			t.Fatalf("got %v want %v", err, errInjectedWrite)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("encryptDecryptWithProgress did not return after write error")
+	}
+}
+
+var errInjectedWrite = errors.New("injected write failure")
+
+type errWriter struct {
+	writes    int
+	failAfter int
+}
+
+func (w *errWriter) Write(p []byte) (int, error) {
+	if w.writes >= w.failAfter {
+		return 0, errInjectedWrite
+	}
+	w.writes++
+	return len(p), nil
+}
+
+func copyFirstNBytes(srcPath, dstPath string, n int64) error {
+	src, err := os.Open(srcPath)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer src.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status code: %s", resp.Status)
-	}
-
-	out, err := os.Create(path)
+	dst, err := os.Create(dstPath)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer dst.Close()
 
-	if _, err := io.Copy(out, resp.Body); err != nil {
+	if _, err := io.CopyN(dst, src, n); err != nil {
 		return err
 	}
 
-	return out.Sync()
+	return nil
+}
+
+func fileSHA256(path string) ([32]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	defer file.Close()
+
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return [32]byte{}, err
+	}
+
+	var sum [32]byte
+	copy(sum[:], hasher.Sum(nil))
+	return sum, nil
 }

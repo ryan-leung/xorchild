@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/vbauerster/mpb/v8"
 	"github.com/vbauerster/mpb/v8/decor"
@@ -71,32 +72,41 @@ func EncryptDecryptFile(keyPath, inputPath, outputPath string) error {
 	}
 	defer output.Close()
 
+	if err := encryptDecryptWithProgress(input, output, key, inputInfo.Size()); err != nil {
+		return fmt.Errorf("process inputfile: %w", err)
+	}
+
+	return nil
+}
+
+func encryptDecryptWithProgress(input io.Reader, output io.Writer, key []byte, totalBytes int64) error {
 	// Create progress bar
 	p := mpb.New(
 		mpb.WithWidth(64),
+		mpb.WithRefreshRate(180*time.Millisecond),
 	)
+	defer p.Wait()
 
-	totalBytes := inputInfo.Size()
 	bar := p.New(int64(totalBytes),
-		mpb.BarStyle().Lbound("|").Filler("▓").Tip("▓").Padding("░").Rbound("|"),
+		mpb.BarStyle().Lbound("[").Filler("=").Tip(">").Padding(".").Rbound("]"),
 		mpb.PrependDecorators(
+			decor.Name("bytes "),
 			decor.CountersNoUnit("%d / %d"),
 		),
 		mpb.AppendDecorators(
-			decor.CountersKibiByte("% .2f / % .2f"),
-			decor.CurrentKibiByte("%.2f"),
-			decor.Elapsed(decor.ET_STYLE_GO),
 			decor.Name(" "),
+			decor.CountersKibiByte("% .2f / % .2f"),
+			decor.Name(" | "),
+			decor.Elapsed(decor.ET_STYLE_GO),
+			decor.Name(" | "),
 			decor.AverageSpeed(decor.SizeB1024(0), "% .2f"),
 		),
 	)
 
 	if err := EncryptDecryptStreamWithProgress(input, output, key, bar); err != nil {
-		p.Wait()
-		return fmt.Errorf("process inputfile: %w", err)
+		bar.Abort(true)
+		return err
 	}
-
-	p.Wait()
 
 	return nil
 }
