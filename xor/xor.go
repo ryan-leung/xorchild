@@ -7,6 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/vbauerster/mpb/v8"
+	"github.com/vbauerster/mpb/v8/decor"
 )
 
 // EncryptDecrypt runs XOR over the input string using the provided key.
@@ -30,6 +33,7 @@ func EncryptDecryptBytes(input, key []byte) []byte {
 }
 
 // EncryptDecryptFile streams XOR processing from inputPath to outputPath using keyPath.
+// It displays a progress bar showing encryption/decryption progress.
 func EncryptDecryptFile(keyPath, inputPath, outputPath string) error {
 	same, err := samePath(inputPath, outputPath)
 	if err != nil {
@@ -67,9 +71,32 @@ func EncryptDecryptFile(keyPath, inputPath, outputPath string) error {
 	}
 	defer output.Close()
 
-	if err := EncryptDecryptStream(input, output, key); err != nil {
+	// Create progress bar
+	p := mpb.New(
+		mpb.WithWidth(64),
+	)
+
+	totalBytes := inputInfo.Size()
+	bar := p.New(int64(totalBytes),
+		mpb.BarStyle().Lbound("|").Filler("▓").Tip("▓").Padding("░").Rbound("|"),
+		mpb.PrependDecorators(
+			decor.CountersNoUnit("%d / %d"),
+		),
+		mpb.AppendDecorators(
+			decor.CountersKibiByte("% .2f / % .2f"),
+			decor.CurrentKibiByte("%.2f"),
+			decor.Elapsed(decor.ET_STYLE_GO),
+			decor.Name(" "),
+			decor.AverageSpeed(decor.SizeB1024(0), "% .2f"),
+		),
+	)
+
+	if err := EncryptDecryptStreamWithProgress(input, output, key, bar); err != nil {
+		p.Wait()
 		return fmt.Errorf("process inputfile: %w", err)
 	}
+
+	p.Wait()
 
 	return nil
 }
@@ -95,6 +122,40 @@ func EncryptDecryptStream(input io.Reader, output io.Writer, key []byte) error {
 			if written != len(chunk) {
 				return io.ErrShortWrite
 			}
+		}
+		if readErr == io.EOF {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+}
+
+// EncryptDecryptStreamWithProgress reads from input, XORs each byte with key, writes to output,
+// and updates the progress bar as bytes are processed.
+func EncryptDecryptStreamWithProgress(input io.Reader, output io.Writer, key []byte, bar *mpb.Bar) error {
+	const bufferSize = 1024 * 1024
+
+	buffer := make([]byte, bufferSize)
+	keyIndex := 0
+	for {
+		n, readErr := input.Read(buffer)
+		if n > 0 {
+			chunk := buffer[:n]
+			for i := range chunk {
+				chunk[i] ^= key[keyIndex]
+				keyIndex = (keyIndex + 1) % len(key)
+			}
+			written, err := output.Write(chunk)
+			if err != nil {
+				return err
+			}
+			if written != len(chunk) {
+				return io.ErrShortWrite
+			}
+			// Update progress bar
+			bar.IncrInt64(int64(n))
 		}
 		if readErr == io.EOF {
 			return nil
