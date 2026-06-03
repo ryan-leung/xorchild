@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*' # Trigger on version tags like v1.0.0, v2.1.0, etc.
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Linux binaries
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux]
+        goarch: [amd64, arm64]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Install Task
+        run: go install github.com/go-task/task/v3/cmd/task@latest
+
+      - name: Set binary name
+        run: |
+          BINARY_NAME="xorchid-${{ matrix.goos }}-${{ matrix.goarch }}"
+          if [ "${{ matrix.goarch }}" = "amd64" ]; then
+            BINARY_NAME="xorchid-${{ matrix.goos }}-x86_64"
+          fi
+          echo "BINARY_NAME=${BINARY_NAME}" >> $GITHUB_ENV
+
+      - name: Build Linux binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          BINARY_NAME: ${{ env.BINARY_NAME }}
+        run: task build-release
+
+      - name: Upload binary as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xorchid-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: build/${{ env.BINARY_NAME }}
+          retention-days: 7
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: xorchid-*
+
+      - name: List artifacts
+        run: ls -R artifacts/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: XORchid ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          body: |
+            ## XORchid ${{ github.ref_name }}
+            
+            XOR encryption tool - XOR-based file encryption/decryption utility.
+            
+            ### Linux Binaries
+            - `xorchid-linux-x86_64` - 64-bit Intel/AMD
+            - `xorchid-linux-arm64` - ARM64 (Raspberry Pi, AWS Graviton, etc.)
+            
+            ### Usage
+            ```bash
+            ./xorchid-linux-x86_64 keyfile inputfile outputfile
+            ```
+          files: |
+            artifacts/*/xorchid-*
+          fail_on_unmatched_files: true

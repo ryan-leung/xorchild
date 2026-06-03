@@ -1,0 +1,97 @@
+version: '3'
+
+vars:
+  VERSION: 0.1.0
+  BINARY: xorchid
+  BUILD_DIR: build
+  BINARY_PATH: '{{.BUILD_DIR}}/{{.BINARY}}.exe'
+
+tasks:
+  default:
+    cmds:
+      - task: build
+    silent: true
+
+  build:
+    desc: Build the binary
+    cmds:
+      - mkdir -p {{.BUILD_DIR}}
+      - go build -o "{{.BUILD_DIR}}/{{.BINARY}}.exe" -ldflags "-X main.Version={{.VERSION}}" ./main.go
+
+  run:
+    desc: Build and run the program
+    deps: [build]
+    cmds:
+      - echo Running {{.BINARY}}...
+      - ./{{.BINARY_PATH}} --help 2>&1 || true
+
+  test:
+    desc: Run all tests
+    cmds:
+      - go test -v ./...
+
+  test-coverage:
+    desc: Run tests with coverage
+    cmds:
+      - go test -cover ./...
+
+  test-race:
+    desc: Run tests with race detector
+    cmds:
+      - go test -race ./...
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - rm -rf {{.BUILD_DIR}}
+
+  install:
+    desc: Install the binary
+    cmds:
+      - go install ./...
+
+  fmt:
+    desc: Format code
+    cmds:
+      - gofmt -w .
+
+  lint:
+    desc: Lint code
+    cmds:
+      - golint ./...
+
+  vet:
+    desc: Run go vet
+    cmds:
+      - go vet ./...
+
+  build-linux:
+    desc: Build for Linux
+    cmds:
+      - mkdir -p {{.BUILD_DIR}}
+      - GOOS=linux GOARCH=amd64 go build -o "{{.BUILD_DIR}}/{{.BINARY}}-linux" -ldflags "-X main.Version={{.VERSION}}" ./main.go
+
+  build-windows:
+    desc: Build for Windows
+    cmds:
+      - mkdir -p {{.BUILD_DIR}}
+      - GOOS=windows GOARCH=amd64 go build -o "{{.BUILD_DIR}}/{{.BINARY}}.exe" -ldflags "-X main.Version={{.VERSION}}" ./main.go
+
+  build-mac:
+    desc: Build for macOS
+    cmds:
+      - mkdir -p {{.BUILD_DIR}}
+      - GOOS=darwin GOARCH=amd64 go build -o "{{.BUILD_DIR}}/{{.BINARY}}-mac" -ldflags "-X main.Version={{.VERSION}}" ./main.go
+
+  build-all:
+    desc: Build for all platforms
+    deps: [clean, build-linux, build-windows, build-mac]
+
+  build-release:
+    desc: Build a release artifact using GOOS, GOARCH, and BINARY_NAME from the environment
+    requires:
+      vars: [GOOS, GOARCH, BINARY_NAME]
+    cmds:
+      - mkdir -p {{.BUILD_DIR}}
+      - go build -o "{{.BUILD_DIR}}/{{.BINARY_NAME}}" .
+      - chmod +x "{{.BUILD_DIR}}/{{.BINARY_NAME}}"
